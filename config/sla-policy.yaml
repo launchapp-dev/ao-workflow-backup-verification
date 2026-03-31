@@ -1,0 +1,35 @@
+rto_thresholds:
+  within_sla_pct: 80         # <80% of SLA consumed = green / within-sla
+  approaching_limit_pct: 100 # 80-100% = yellow / approaching-limit
+  # >100% = red / exceeds-sla
+
+escalation:
+  on_failed_integrity: immediate    # alert immediately on integrity failure
+  on_exceeds_sla: immediate         # alert immediately on SLA breach
+  on_approaching_limit: daily_report # include in daily report only
+  on_degraded: daily_report          # include in daily report only
+
+compliance_mappings:
+  soc2:
+    - criterion: "A1.1"
+      control: "Backup verification pass rate"
+      description: "System availability is protected by verifying backup recoverability daily"
+      evidence_source: "daily-health-report"
+      target_pass_rate_pct: 99
+    - criterion: "A1.2"
+      control: "Restore time within SLA"
+      description: "Recovery time objectives are measured and tracked against defined SLA targets"
+      evidence_source: "rto-measurements"
+      target_sla_adherence_pct: 99
+  iso27001:
+    - control: "A.12.3.1"
+      description: "Information backup"
+      detail: "Backup copies of information and software are taken and tested regularly"
+      evidence_source: "integrity-results"
+      target_pass_rate_pct: 100
+
+retention:
+  daily_reports_days: 90
+  rto_history_days: 365
+  compliance_evidence_months: 24
+  alert_files_days: 30

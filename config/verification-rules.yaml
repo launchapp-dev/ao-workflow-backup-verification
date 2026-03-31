@@ -1,0 +1,21 @@
+integrity_checks:
+  postgresql:
+    - type: row_count
+      tolerance_pct: 0          # exact match required — no data loss acceptable
+    - type: table_list
+      tolerance: exact          # all tables must be present after restore
+    - type: schema_check
+      compare: column_names_and_types
+
+  filesystem:
+    - type: file_count
+      tolerance_pct: 0          # exact file count match
+    - type: checksum
+      algorithm: sha256
+      sample_rate: 100          # verify 100% of files (adjust for large stores)
+
+  sqlite:
+    - type: row_count
+      tolerance_pct: 0          # exact match
+    - type: table_list
+      tolerance: exact          # all tables must exist

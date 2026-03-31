@@ -1,0 +1,39 @@
+backup_sources:
+  - id: prod-db-main
+    type: postgresql
+    backup_method: pg_dump
+    backup_path: "/backups/prod-db-main/latest.dump"
+    test_restore_db: "test_restore_prod_main"
+    tables_to_verify: ["users", "orders", "products", "transactions"]
+    verify_frequency: daily
+    sla_rto_seconds: 300
+    checksum_file: "data/snapshots/prod-db-main-checksums.txt"
+
+  - id: prod-db-analytics
+    type: postgresql
+    backup_method: pg_dump
+    backup_path: "/backups/prod-db-analytics/latest.dump"
+    test_restore_db: "test_restore_analytics"
+    tables_to_verify: ["events", "metrics", "aggregates"]
+    verify_frequency: daily
+    sla_rto_seconds: 600
+    checksum_file: "data/snapshots/prod-db-analytics-checksums.txt"
+
+  - id: app-uploads
+    type: filesystem
+    backup_method: rsync
+    backup_path: "/backups/app-uploads/latest/"
+    test_restore_path: "/tmp/test-restore/app-uploads/"
+    verify_frequency: daily
+    sla_rto_seconds: 120
+    checksum_file: "data/snapshots/app-uploads-checksums.txt"
+
+  - id: config-store
+    type: sqlite
+    backup_method: sqlite_dump
+    backup_path: "/backups/config-store/latest.db"
+    test_restore_path: "/tmp/test-restore/config-store.db"
+    tables_to_verify: ["settings", "feature_flags", "tenants"]
+    verify_frequency: daily
+    sla_rto_seconds: 30
+    checksum_file: "data/snapshots/config-store-checksums.txt"

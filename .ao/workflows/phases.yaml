@@ -1,0 +1,244 @@
+phases:
+  # ─── verify-backups workflow phases ───────────────────────────────────────
+
+  identify-due-backups:
+    mode: agent
+    agent: backup-scheduler
+    directive: |
+      Determine which backup sources are due for verification today.
+
+      Steps:
+      1. Read config/backup-sources.yaml to get the full list of registered backup sources
+      2. Read data/snapshots/last-verified.json to find the last verification timestamp per source_id
+         (if this file doesn't exist, treat all sources as due)
+      3. For each source, compare today's date (2026-03-31) against the last verification date
+         and the source's verify_frequency (daily = must be >20h since last run,
+         weekly = must be >6 days, monthly = must be >28 days)
+      4. Generate today's manifest at data/manifests/2026-03-31-manifest.json
+         with the list of sources to verify. Each entry must include:
+         source_id, backup_type, backup_path, sla_rto_seconds, tables_to_verify (if applicable)
+      5. If the manifests directory doesn't exist, create it
+
+      Emit decision contract as the final JSON line:
+      { "verdict": "backups-found" | "none-due", "count": N, "sources": ["source_id", ...] }
+    capabilities:
+      mutates_state: true
+      writes_files: true
+    decision_contract:
+      required_fields: [verdict, count, sources]
+
+  execute-restores:
+    mode: command
+    command:
+      program: bash
+      args: ["-c", "scripts/execute-restores.sh"]
+      cwd_mode: project_root
+      timeout_secs: 1800
+    capabilities:
+      mutates_state: true
+      writes_files: true
+
+  validate-integrity:
+    mode: agent
+    agent: integrity-validator
+    directive: |
+      Validate data integrity for all backup sources restored today.
+
+      Steps:
+      1. Read today's manifest at data/manifests/2026-03-31-manifest.json
+      2. Read restore-operator-summary.json from data/restore-logs/2026-03-31/ (written by restore-operator)
+      3. For each source in the manifest:
+         a. Read the restore log at data/restore-logs/2026-03-31/<source_id>.json
+         b. Check exit_code — if non-zero, mark as "failed" immediately
+         c. For PostgreSQL sources: compare row_counts in the restore log against expected counts in manifest
+         d. For filesystem sources: compare file counts and check checksum file if present
+         e. For SQLite sources: compare row counts for each table
+         f. Write results to data/integrity-results/2026-03-31/<source_id>.json
+      4. Aggregate results across all sources
+      5. Determine overall verdict:
+         - "failed" if any source has exit_code != 0 or checksum mismatch
+         - "degraded" if any source has row count differences within tolerance but non-zero
+         - "verified" if all sources pass all checks
+
+      Write all integrity result files before emitting the decision contract.
+      Emit decision contract as the final JSON line:
+      { "verdict": "verified" | "degraded" | "failed", "failed_sources": [...], "degraded_sources": [...] }
+    capabilities:
+      mutates_state: true
+      writes_files: true
+    decision_contract:
+      required_fields: [verdict, failed_sources, degraded_sources]
+
+  measure-rto:
+    mode: command
+    command:
+      program: python3
+      args: ["scripts/measure-rto.py"]
+      cwd_mode: project_root
+      timeout_secs: 60
+
+  generate-daily-report:
+    mode: agent
+    agent: alert-reporter
+    directive: |
+      Generate the daily backup health report.
+
+      Steps:
+      1. Read today's manifest at data/manifests/2026-03-31-manifest.json
+      2. Read all integrity results from data/integrity-results/2026-03-31/
+      3. Read RTO summary from data/rto-measurements/2026-03-31-summary.json
+      4. Read last 7 days of RTO history from data/rto-measurements/history.jsonl
+         (filter lines where date >= 7 days ago)
+      5. Produce output/daily-health-report.md with:
+         - Date header: 2026-03-31
+         - Summary: total sources verified, passed count, degraded count, failed count
+         - Per-source status table (markdown) with columns:
+           Source | Type | Integrity | RTO (s) | SLA Target (s) | SLA Status | Notes
+         - 7-day trend section showing pass/fail counts per day
+         - Alerts section (if any failed or exceeds-sla sources)
+         - Recommendations section with specific actions for any issues
+      6. If any sources have verdict "failed" or rto_status "exceeds-sla":
+         - Write output/alerts/2026-03-31-alert.md with severity, details, and recommended actions
+         - Write output/alerts/2026-03-31-github-issue.md as a GitHub issue template
+      7. Ensure output/ and output/alerts/ directories exist
+
+      Be specific and actionable in recommendations. Reference source IDs and actual numbers.
+    capabilities:
+      mutates_state: true
+      writes_files: true
+
+  # ─── weekly-rto-analysis workflow phases ──────────────────────────────────
+
+  aggregate-rto-data:
+    mode: command
+    command:
+      program: python3
+      args: ["scripts/aggregate-rto.py"]
+      cwd_mode: project_root
+      timeout_secs: 60
+
+  analyze-trends:
+    mode: agent
+    agent: alert-reporter
+    directive: |
+      Analyze weekly RTO trends and produce the weekly trend report.
+
+      Steps:
+      1. Determine the current ISO week number from today's date (2026-03-31)
+      2. Read the weekly aggregate from data/rto-measurements/weekly-<YYYY-WW>.json
+      3. Read the previous 3 weekly aggregates for comparison (if they exist)
+      4. For each source, identify:
+         - Week-over-week RTO change (seconds and percentage)
+         - Trend direction: "improving" (>10% decrease), "stable" (<10% change), "degrading" (>10% increase)
+         - Sources averaging >70% of SLA consumed (at risk)
+         - Sources with any SLA breach in the past week
+      5. Produce output/weekly-rto-trends.md with:
+         - Executive summary (2-3 sentences on overall health)
+         - Per-source 4-week trend table with min/max/avg/p95 and SLA adherence rate
+         - Sources at risk section (degrading trend or near limit)
+         - Recommendations section with specific remediations
+
+      Format the 4-week trend table in markdown with week numbers as columns.
+      Use ✓ for within-SLA weeks and ✗ for SLA breach weeks.
+    capabilities:
+      mutates_state: true
+      writes_files: true
+
+  # ─── monthly-compliance workflow phases ───────────────────────────────────
+
+  collect-evidence:
+    mode: agent
+    agent: compliance-packager
+    directive: |
+      Collect and structure compliance evidence from this month's verification runs.
+
+      Steps:
+      1. Determine the current month (2026-03)
+      2. Scan data/integrity-results/ for all directories matching YYYY-MM-DD in the current month
+      3. Scan data/rto-measurements/ for all files matching YYYY-MM-DD-summary.json in the current month
+      4. Read config/sla-policy.yaml for compliance framework mappings
+      5. Create data/compliance-evidence/2026-03/ directory
+      6. Produce three evidence files in that directory:
+
+         backup-verification-evidence.json:
+         - Array of all daily verification runs with date, sources_verified, passed, degraded, failed counts
+         - For each failed/degraded run, include source_id and failure details
+
+         rto-compliance-evidence.json:
+         - Array of all RTO measurements for the month
+         - Map each entry to SOC2 A1.2 and ISO 27001 A.12.3.1
+         - Include whether each measurement was within SLA
+
+         integrity-evidence.json:
+         - Array of all integrity check results for the month
+         - Per-source summary with total checks run, passed, failed, overall pass rate
+
+      7. Calculate overall compliance metrics:
+         - backup_verification_pass_rate (%)
+         - rto_sla_adherence_rate (%)
+         - integrity_check_pass_rate (%)
+
+      Be thorough — auditors will read these files directly.
+    capabilities:
+      mutates_state: true
+      writes_files: true
+
+  generate-attestation:
+    mode: agent
+    agent: compliance-packager
+    directive: |
+      Generate the formal monthly compliance attestation package.
+
+      Prerequisites: data/compliance-evidence/2026-03/ must exist with all three evidence files.
+
+      Steps:
+      1. Read all three evidence files from data/compliance-evidence/2026-03/
+      2. Use sequential-thinking to systematically map evidence to each compliance control:
+         - SOC2 A1.1: does evidence demonstrate consistent backup verification? What is the pass rate?
+         - SOC2 A1.2: does evidence demonstrate RTO within SLA? What percentage of restores met SLA?
+         - ISO 27001 A.12.3.1: does evidence demonstrate information backup procedures are followed?
+      3. Create output/monthly-attestation/2026-03/ directory
+      4. Write four documents:
+
+         attestation-summary.md:
+         - Formal attestation header with period, date, and preparer
+         - Executive summary of compliance posture
+         - Overall compliance verdict with metrics
+
+         control-matrix.md:
+         - Table mapping each control to evidence files and coverage status
+         - Columns: Control ID | Description | Evidence Files | Coverage | Status
+
+         exceptions-log.md:
+         - Any failures, SLA breaches, or coverage gaps
+         - For each exception: date, source, description, severity, remediation taken or planned
+
+         evidence-index.md:
+         - Index of all evidence files with paths, date ranges, and record counts
+
+      5. Determine compliance verdict:
+         - "compliant" if pass rates >99% and no unmitigated exceptions
+         - "exceptions-noted" if pass rates >95% with documented exceptions
+         - "non-compliant" if pass rates <95% or undocumented failures
+
+      Emit decision contract as the final JSON line:
+      { "verdict": "compliant" | "exceptions-noted" | "non-compliant",
+        "compliance_rate": N, "exception_count": N }
+    capabilities:
+      mutates_state: true
+      writes_files: true
+    decision_contract:
+      required_fields: [verdict, compliance_rate, exception_count]
+
+  # ─── manual gate ──────────────────────────────────────────────────────────
+
+  compliance-review-gate:
+    mode: manual
+    directive: |
+      Review the monthly compliance attestation package before finalizing.
+
+      Please review:
+      - output/monthly-attestation/2026-03/attestation-summary.md
+      - output/monthly-attestation/2026-03/exceptions-log.md
+
+      Approve to finalize the package. Reject to send back for corrections.

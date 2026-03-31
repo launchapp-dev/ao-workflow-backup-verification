@@ -1,0 +1,46 @@
+default_workflow_ref: verify-backups
+
+workflows:
+  - id: verify-backups
+    name: "Daily Backup Verification"
+    description: "Full backup verification cycle: identify due sources, execute restores, validate integrity, measure RTO, and report"
+    phases:
+      - identify-due-backups:
+          on_verdict:
+            none-due:
+              target: generate-daily-report
+      - execute-restores
+      - validate-integrity:
+          on_verdict:
+            degraded:
+              target: measure-rto
+            failed:
+              target: execute-restores
+          max_rework_attempts: 2
+      - measure-rto
+      - generate-daily-report
+    post_success:
+      notify:
+        message: "Backup verification complete. Report available at output/daily-health-report.md"
+
+  - id: weekly-rto-analysis
+    name: "Weekly RTO Trend Analysis"
+    description: "Aggregate RTO measurements from the past week and analyze trends against SLA targets"
+    phases:
+      - aggregate-rto-data
+      - analyze-trends
+
+  - id: monthly-compliance
+    name: "Monthly Compliance Report"
+    description: "Collect SOC2/ISO evidence from monthly verification runs and generate attestation package"
+    phases:
+      - collect-evidence
+      - generate-attestation:
+          on_verdict:
+            non-compliant:
+              target: collect-evidence
+          max_rework_attempts: 1
+      - compliance-review-gate
+    post_success:
+      notify:
+        message: "Monthly compliance package ready at output/monthly-attestation/"

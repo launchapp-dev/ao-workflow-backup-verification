@@ -1,0 +1,15 @@
+schedules:
+  - id: daily-backup-verification
+    cron: "0 6 * * *"
+    workflow_ref: verify-backups
+    enabled: true
+
+  - id: weekly-rto-analysis
+    cron: "0 8 * * 1"
+    workflow_ref: weekly-rto-analysis
+    enabled: true
+
+  - id: monthly-compliance-report
+    cron: "0 9 1 * *"
+    workflow_ref: monthly-compliance
+    enabled: true
